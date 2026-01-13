@@ -58,6 +58,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     await interaction.deferReply();
 
+    // 버튼 제거 (원본 메시지 수정)
+    await interaction.message.edit({
+      content: `✅ **${nickname}** 캐릭터 정보를 불러오는 중...`,
+      components: [], // 모든 버튼 제거
+    });
+
     const result = await fetchAionCharacter(nickname, serverIdNum);
 
     await interaction.editReply({ embeds: [result.embed] });
