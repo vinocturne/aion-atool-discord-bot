@@ -3,6 +3,9 @@ import {
   GatewayIntentBits,
   Events,
   PermissionFlagsBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } from "discord.js";
 import * as dotenv from "dotenv";
 import {
@@ -10,6 +13,8 @@ import {
   debugAionPage,
   screenshotAionPage,
   closeBrowser,
+  searchAllServers,
+  SearchResult,
 } from "./scrapers/siteScraper";
 
 dotenv.config();
@@ -34,6 +39,35 @@ client.once(Events.ClientReady, (c) => {
   const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${c.user.id}&permissions=${permissions}&scope=bot`;
 
   console.log(`\n📎 봇 초대 URL:\n${inviteUrl}\n`);
+});
+
+// 버튼 상호작용 처리
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isButton()) return;
+
+  // 버튼 customId 형식: "char_서버ID_닉네임"
+  const [action, serverId, ...nicknameParts] = interaction.customId.split("_");
+
+  if (action !== "char") return;
+
+  const nickname = nicknameParts.join("_");
+  const serverIdNum = parseInt(serverId);
+
+  console.log(`🔘 [InteractionCreate] 버튼 클릭: ${nickname} (서버ID: ${serverIdNum})`);
+
+  try {
+    await interaction.deferReply();
+
+    const result = await fetchAionCharacter(nickname, serverIdNum);
+
+    await interaction.editReply({ embeds: [result.embed] });
+    console.log(`✅ [InteractionCreate] 캐릭터 정보 표시 완료`);
+  } catch (error) {
+    console.error("❌ [InteractionCreate] 캐릭터 정보 가져오기 실패:", error);
+    await interaction.editReply({
+      content: `❌ **${nickname}** 캐릭터 정보를 가져올 수 없습니다.`,
+    });
+  }
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -77,15 +111,66 @@ client.on(Events.MessageCreate, async (message) => {
 
     // 캐릭터 검색
     try {
-      await message.reply(`⏳ **${nickname}** 캐릭터를 검색하는 중...`);
+      console.log(`🔍 [MessageCreate] 검색 시작: ${nickname}`);
+      const searchingMsg = await message.reply(`⏳ **${nickname}** 캐릭터를 검색하는 중...`);
 
-      const result = await fetchAionCharacter(nickname);
+      // 전체 서버에서 검색
+      const searchResults = await searchAllServers(nickname);
+      console.log(`📊 [MessageCreate] 검색 결과: ${searchResults.length}개`);
 
-      await message.reply({ embeds: [result.embed] });
+      if (searchResults.length === 0) {
+        console.log(`❌ [MessageCreate] 결과 없음 - 에러 메시지 표시`);
+        await searchingMsg.edit(`❌ **${nickname}** 캐릭터를 찾을 수 없습니다.`);
+        return;
+      }
+
+      if (searchResults.length === 1) {
+        console.log(`✅ [MessageCreate] 결과 1개 - 바로 상세 정보 표시`);
+        // 결과가 1개면 바로 상세 정보 표시
+        const result = await fetchAionCharacter(
+          searchResults[0].nickname,
+          searchResults[0].server_id
+        );
+        await searchingMsg.delete();
+        await message.reply({ embeds: [result.embed] });
+        return;
+      }
+
+      console.log(`🔘 [MessageCreate] 결과 ${searchResults.length}개 - 버튼 표시`);
+      // 결과가 여러 개면 서버 선택 버튼 생성
+      const buttons: ButtonBuilder[] = [];
+
+      // Discord 메시지당 최대 5개 버튼까지 표시 (더 많으면 여러 줄로)
+      for (const char of searchResults.slice(0, 25)) { // 최대 25개 (5x5)
+        buttons.push(
+          new ButtonBuilder()
+            .setCustomId(`char_${char.server_id}_${char.nickname}`)
+            .setLabel(
+              `${char.server_name} - Lv.${char.level} (${char.combat_power.toLocaleString()})`
+            )
+            .setStyle(ButtonStyle.Primary)
+        );
+      }
+
+      // 버튼을 5개씩 나눠서 ActionRow에 배치
+      const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+      for (let i = 0; i < buttons.length; i += 5) {
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          buttons.slice(i, i + 5)
+        );
+        rows.push(row);
+      }
+
+      await searchingMsg.edit({
+        content: `🔍 **${nickname}** 검색 결과 - 서버를 선택하세요:`,
+        components: rows,
+      });
+      console.log(`✅ [MessageCreate] 버튼 표시 완료`);
     } catch (error) {
-      console.error("에러:", error);
+      console.error("❌ [MessageCreate] 에러 발생:", error);
       await message.reply(`❌ **${nickname}** 캐릭터를 찾을 수 없습니다.`);
     }
+    console.log(`🏁 [MessageCreate] 검색 처리 종료`);
   }
 });
 

@@ -1,5 +1,6 @@
 import { EmbedBuilder } from "discord.js";
 import puppeteer, { Browser } from "puppeteer";
+import axios from "axios";
 
 // 대기 헬퍼 함수
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -9,8 +10,23 @@ let sharedBrowser: Browser | null = null;
 
 // 브라우저 인스턴스 가져오기 (재사용)
 async function getBrowser(): Promise<Browser> {
-  if (!sharedBrowser || !sharedBrowser.isConnected()) {
-    console.log("🌐 새 브라우저 인스턴스 생성");
+  // 기존 브라우저가 있고 연결되어 있는지 확인
+  if (sharedBrowser) {
+    try {
+      // 브라우저가 실제로 동작하는지 테스트
+      if (sharedBrowser.isConnected()) {
+        console.log("♻️ 기존 브라우저 인스턴스 재사용");
+        return sharedBrowser;
+      }
+    } catch (error) {
+      console.log("⚠️ 기존 브라우저 연결 끊김, 재생성");
+      sharedBrowser = null;
+    }
+  }
+
+  // 새 브라우저 인스턴스 생성
+  console.log("🌐 새 브라우저 인스턴스 생성");
+  try {
     sharedBrowser = await puppeteer.launch({
       headless: true,
       args: [
@@ -20,14 +36,23 @@ async function getBrowser(): Promise<Browser> {
         "--disable-gpu",
         "--no-first-run",
         "--no-zygote",
-        "--single-process",
       ],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      timeout: 60000, // 60초 타임아웃
     });
-  } else {
-    console.log("♻️ 기존 브라우저 인스턴스 재사용");
+
+    // 브라우저 이벤트 리스너 추가
+    sharedBrowser.on("disconnected", () => {
+      console.log("⚠️ 브라우저 연결 끊김");
+      sharedBrowser = null;
+    });
+
+    return sharedBrowser;
+  } catch (error) {
+    console.error("❌ 브라우저 생성 실패:", error);
+    sharedBrowser = null;
+    throw error;
   }
-  return sharedBrowser;
 }
 
 // 브라우저 닫기 (앱 종료 시 호출)
@@ -46,6 +71,7 @@ interface SkillInfo {
 
 interface CharacterStats {
   nickname: string;
+  serverName: string;
   combatPower: string;
   job: string;
   dpsScore: string;
@@ -67,16 +93,96 @@ interface CharacterStats {
   stigmas: SkillInfo[];
 }
 
-export async function fetchAionCharacter(nickname: string): Promise<{
+export interface SearchResult {
+  avatar_url: string;
+  combat_power: number;
+  combat_score?: number;
+  image_url: string;
+  job: string;
+  level: number;
+  nickname: string;
+  race: string;
+  server: string;
+  server_id: number;
+  server_name: string;
+  updated_at?: string;
+}
+
+// 전체 서버에서 캐릭터 검색
+export async function searchAllServers(
+  nickname: string
+): Promise<SearchResult[]> {
+  console.log(`🔍 전체 서버 검색 중: ${nickname}`);
+
+  let results1: SearchResult[] = [];
+  let results2: SearchResult[] = [];
+
+  // 천족(race: 1) 검색
+  try {
+    const response1 = await axios.post(
+      "https://aion2tool.com/api/character/search-all-servers",
+      {
+        race: 1, // 천족
+        keyword: nickname,
+      }
+    );
+    // API 응답이 { data: [...] } 형태로 중첩되어 있음
+    const data1 = response1.data?.data || response1.data;
+    results1 = Array.isArray(data1) ? data1 : [];
+    console.log(`✅ 천족: ${results1.length}개 발견`);
+  } catch (error) {
+    console.error("천족 검색 실패:", error);
+  }
+
+  // 마족(race: 2) 검색
+  try {
+    const response2 = await axios.post(
+      "https://aion2tool.com/api/character/search-all-servers",
+      {
+        race: 2, // 마족
+        keyword: nickname,
+      }
+    );
+    // API 응답이 { data: [...] } 형태로 중첩되어 있음
+    const data2 = response2.data?.data || response2.data;
+    results2 = Array.isArray(data2) ? data2 : [];
+    console.log(`✅ 마족: ${results2.length}개 발견`);
+  } catch (error) {
+    console.error("마족 검색 실패:", error);
+  }
+
+  // 두 결과를 합침
+  const allResults = [...results1, ...results2];
+
+  console.log(`✅ 총 ${allResults.length}개의 캐릭터를 찾았습니다.`);
+
+  return allResults;
+}
+
+export async function fetchAionCharacter(
+  nickname: string,
+  serverId: number = 2006
+): Promise<{
   embed: EmbedBuilder;
   url: string;
 }> {
-  const url = `https://aion2tool.com/char/serverid=2006/${encodeURIComponent(
+  const url = `https://aion2tool.com/char/serverid=${serverId}/${encodeURIComponent(
     nickname
   )}`;
 
-  const browser = await getBrowser();
-  const page = await browser.newPage();
+  let browser;
+  let page;
+
+  try {
+    browser = await getBrowser();
+    page = await browser.newPage();
+  } catch (error) {
+    console.error("❌ 브라우저/페이지 생성 실패:", error);
+    // 브라우저 재생성 시도
+    sharedBrowser = null;
+    browser = await getBrowser();
+    page = await browser.newPage();
+  }
 
   try {
     console.log(`🔍 검색 중: ${url}`);
@@ -103,6 +209,8 @@ export async function fetchAionCharacter(nickname: string): Promise<{
       // 기본 정보
       const nickname =
         document.querySelector("#result-nickname")?.textContent?.trim() || "";
+      const serverName =
+        document.querySelector("#result-server")?.textContent?.trim() || "";
       const combatPower =
         document.querySelector("#result-combat-power")?.textContent?.trim() ||
         "";
@@ -183,6 +291,7 @@ export async function fetchAionCharacter(nickname: string): Promise<{
 
       return {
         nickname,
+        serverName,
         combatPower,
         job,
         dpsScore,
@@ -221,7 +330,9 @@ export async function fetchAionCharacter(nickname: string): Promise<{
     // Embed 생성
     const embed = new EmbedBuilder()
       .setColor(0x00ae86)
-      .setTitle(`🎮 ${characterData.nickname || nickname}`)
+      .setTitle(
+        `🎮 ${characterData.nickname || nickname}[${characterData.serverName}]`
+      )
       .setURL(url)
       .addFields(
         {
@@ -361,7 +472,13 @@ export async function fetchAionCharacter(nickname: string): Promise<{
     throw error;
   } finally {
     // 페이지만 닫기 (브라우저는 유지)
-    await page.close();
+    if (page) {
+      try {
+        await page.close();
+      } catch (e) {
+        console.error("페이지 닫기 실패:", e);
+      }
+    }
   }
 }
 
