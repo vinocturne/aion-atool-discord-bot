@@ -117,46 +117,91 @@ export async function searchAllServers(
   let results1: SearchResult[] = [];
   let results2: SearchResult[] = [];
 
-  // 천족(race: 1) 검색
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+
   try {
-    const response1 = await axios.post(
-      "https://aion2tool.com/api/character/search-all-servers",
-      {
-        race: 1, // 천족
-        keyword: nickname,
-      }
+    // User-Agent 설정
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     );
-    // API 응답이 { data: [...] } 형태로 중첩되어 있음
-    const data1 = response1.data?.data || response1.data;
-    results1 = Array.isArray(data1) ? data1 : [];
-    console.log(`✅ 천족: ${results1.length}개 발견`);
-  } catch (error) {
-    console.error("천족 검색 실패:", error);
-  }
 
-  // 마족(race: 2) 검색
-  try {
-    const response2 = await axios.post(
-      "https://aion2tool.com/api/character/search-all-servers",
-      {
-        race: 2, // 마족
-        keyword: nickname,
-      }
+    // 먼저 메인 페이지에 접속하여 Cloudflare 챌린지 통과
+    console.log("🌐 메인 페이지 접속 중...");
+    await page.goto("https://aion2tool.com", {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
+
+    // Cloudflare 챌린지 완료 대기 (더 길게)
+    await wait(5000);
+
+    // 천족과 마족 검색을 한 번에 처리 (더 빠름)
+    console.log("🔍 천족 & 마족 검색 중...");
+    const [response1, response2] = await page.evaluate(
+      async (nickname) => {
+        const fetchRace = async (race: number) => {
+          try {
+            const response = await fetch(
+              "https://aion2tool.com/api/character/search-all-servers",
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  race: race,
+                  keyword: nickname,
+                }),
+              }
+            );
+            return await response.json();
+          } catch (error) {
+            console.error(`Race ${race} 검색 실패:`, error);
+            return null;
+          }
+        };
+
+        // 천족과 마족 병렬 요청
+        return await Promise.all([fetchRace(1), fetchRace(2)]);
+      },
+      nickname
     );
-    // API 응답이 { data: [...] } 형태로 중첩되어 있음
-    const data2 = response2.data?.data || response2.data;
-    results2 = Array.isArray(data2) ? data2 : [];
-    console.log(`✅ 마족: ${results2.length}개 발견`);
-  } catch (error) {
-    console.error("마족 검색 실패:", error);
+
+    // 천족 결과 처리
+    if (response1) {
+      const data1 = response1?.data || response1;
+      results1 = Array.isArray(data1) ? data1 : [];
+      console.log(`✅ 천족: ${results1.length}개 발견`);
+    } else {
+      console.log("⚠️ 천족 검색 실패");
+    }
+
+    // 마족 결과 처리
+    if (response2) {
+      const data2 = response2?.data || response2;
+      results2 = Array.isArray(data2) ? data2 : [];
+      console.log(`✅ 마족: ${results2.length}개 발견`);
+    } else {
+      console.log("⚠️ 마족 검색 실패");
+    }
+
+    // 두 결과를 합침
+    const allResults = [...results1, ...results2];
+
+    console.log(`✅ 총 ${allResults.length}개의 캐릭터를 찾았습니다.`);
+
+    return allResults;
+  } finally {
+    // 페이지만 닫기 (브라우저는 유지)
+    if (page) {
+      try {
+        await page.close();
+      } catch (e) {
+        console.error("페이지 닫기 실패:", e);
+      }
+    }
   }
-
-  // 두 결과를 합침
-  const allResults = [...results1, ...results2];
-
-  console.log(`✅ 총 ${allResults.length}개의 캐릭터를 찾았습니다.`);
-
-  return allResults;
 }
 
 export async function fetchAionCharacter(
